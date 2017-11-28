@@ -43,7 +43,8 @@ namespace wg2k.umbraco
         private bool canUpdate { get; set; }
         private bool canDelete { get; set; }
         private bool simpleJSON { get; set; }
-
+        private bool recursive { get; set; }
+        
         //Constructors
         public uHateoas()
         {
@@ -96,6 +97,7 @@ namespace wg2k.umbraco
             canCreate = false;
             canUpdate = false;
             canDelete = false;
+            recursive = false;
         }
 
         //Process Overrides
@@ -134,6 +136,11 @@ namespace wg2k.umbraco
             mainModel = model;
             currentPageId = model.Id;
             simpleJSON = simple;
+            if (context.Request["recursive"] != null && context.Request["recursive"] == "true")
+            {
+                recursive = true;
+            }
+            
             FormsAuthenticationTicket ticket = new HttpContextWrapper(HttpContext.Current).GetUmbracoAuthTicket();
             try
             {
@@ -223,7 +230,7 @@ namespace wg2k.umbraco
                 entities.AddRange(GetChildrenEntities(model));
                 if (!simpleJSON && (canCreate || canUpdate || canDelete))
                     actions.AddRange(GetChildrenActions(model));
-                Dictionary<string, object> simpleNode = Simplify(model, true, entities, actions);
+                Dictionary<string, object> simpleNode = Simplify(model, true, entities, actions, false);
                 return simpleNode;
             }
             catch (Exception ex)
@@ -233,9 +240,13 @@ namespace wg2k.umbraco
         }
         private Dictionary<string, object> Simplify(IPublishedContent node)
         {
-            return Simplify(node, false, new List<object>(), new List<object>());
+            return Simplify(node, false, new List<object>(), new List<object>(), false);
         }
-        private Dictionary<string, object> Simplify(IPublishedContent node, bool isRoot, List<object> entities, List<object> actions)
+        private Dictionary<string, object> Simplify(IPublishedContent node, bool isChild)
+        {
+            return Simplify(node, false, new List<object>(), new List<object>(), isChild);
+        }
+        private Dictionary<string, object> Simplify(IPublishedContent node, bool isRoot, List<object> entities, List<object> actions, bool isChild)
         {
             try
             {
@@ -309,7 +320,10 @@ namespace wg2k.umbraco
                     }
                 }
                 // resolve any nested content nodes specified by the resolveContent switch
-                ResolveContent(properties);
+                if (isChild == false)
+                {
+                    ResolveContent(properties);
+                }
                 if (context.Request["select"] != null)
                 {
                     SortedDictionary<string, object> selectedProperties = new SortedDictionary<string, object>();
@@ -619,7 +633,7 @@ namespace wg2k.umbraco
             string propTitle = Regex.Replace(propName, "(\\B[A-Z])", " $1");
             if (val != null)
             {
-                if (val.ToString().Contains("/>") || val.ToString().Contains("</"))
+                if ((val.ToString().Contains("/>") || val.ToString().Contains("</")) && PropertyEditorAlias != "Umbraco.TinyMCEv3")
                 {
                     try
                     {
@@ -632,6 +646,10 @@ namespace wg2k.umbraco
                         if (encodeHTML)
                             val = context.Server.HtmlEncode(val.ToString());
                     }
+                }
+                else if (PropertyEditorAlias == "Umbraco.TinyMCEv3")
+                {
+                    val = val.ToString();
                 }
                 val = ResolveMedia(propName, val).ToString();
                 if (context.Request["html"] != null && context.Request["html"].ToString().ToLower() == "false")
@@ -732,7 +750,7 @@ namespace wg2k.umbraco
                 List<object> descendantObjectList = new List<object>();
                 foreach (IPublishedContent d in descendantList)
                 {
-                    descendantObjectList.Add(Simplify(d));
+                    descendantObjectList.Add(Simplify(d, false));
                 }
                 entities.AddRange(descendantObjectList);
             }
@@ -757,7 +775,7 @@ namespace wg2k.umbraco
                 List<object> childObjectList = new List<object>();
                 foreach (IPublishedContent child in childList)
                 {
-                    childObjectList.Add(Simplify(child));
+                    childObjectList.Add(Simplify(child, true));
                 }
                 entities.AddRange(childObjectList);
             }
@@ -1058,26 +1076,34 @@ namespace wg2k.umbraco
             {
                 foreach (string key in context.Request["resolveContent"].ToString().Split(','))
                 {
-                    if (properties.ContainsKey(key))
+                    if (properties.ContainsKey(key) && key != "Path")
                     {
                         try
                         {
-                            if (((dynamic)(properties[key])).GetType() == typeof(Int32))
-                            {
-                                int nodeid = (Int32) properties[key];
-                                if (nodeid != currentPageId && key != "Path")
-                                    properties[key] = Simplify(umbHelper.TypedContent(nodeid));
-                            }
-                            else if ((dynamic)(properties[key]).GetType() == typeof(string))
+                            var nodes = Convert.ToString(properties[key]);
+                            if (!string.IsNullOrEmpty(nodes))
                             {
                                 List<object> content = new List<object>();
-                                foreach (string node in ((string)(properties[key])).Split(','))
+                                if (nodes.IndexOf(",") == -1)
                                 {
-                                    int nodeid = int.Parse(node);
-                                    if (nodeid != currentPageId && key != "Path")
-                                        content.Add(Simplify(umbHelper.TypedContent(nodeid)));
+                                    int nodeid = int.Parse(nodes);
+                                    if (nodeid != currentPageId)
+                                        content.Add(Simplify(umbHelper.TypedContent(nodeid), !recursive));
+                                }
+                                else
+                                {
+                                    foreach (string node in nodes.Split(','))
+                                    {
+                                        int nodeid = int.Parse(node);
+                                        if (nodeid != currentPageId)
+                                            content.Add(Simplify(umbHelper.TypedContent(nodeid), !recursive));
+                                    }
                                 }
                                 properties[key] = content;
+                            }
+                            else
+                            {
+                                properties[key] = properties[key];
                             }
                         }
                         catch (Exception ex)
